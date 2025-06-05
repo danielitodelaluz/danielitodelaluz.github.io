@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Analyse interactive des résultats Cadets AF</title>
+  <!-- Chart.js & PapaParse CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0 1rem 2rem;
+      background: #f5f7fb;
+    }
+    h1 {
+      text-align: center;
+      margin-top: 1.2rem;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      justify-content: center;
+      margin: 1.5rem 0;
+    }
+    .chart-wrapper {
+      max-width: 1100px;
+      margin: 0 auto 2rem;
+      background: #fff;
+      border-radius: 0.75rem;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+      padding: 1.5rem;
+    }
+    canvas {
+      width: 100% !important;
+      height: 400px !important;
+    }
+    select, input[type="file"] {
+      padding: 0.4rem 0.7rem;
+      border-radius: 0.4rem;
+      border: 1px solid #ccc;
+      font-size: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>Tableau de bord – Résultats Cadets Air France</h1>
+
+  <div class="controls">
+    <input type="file" id="csvFile" accept=".csv" />
+    <label>
+      Exercice :
+      <select id="exerciseSelect"></select>
+    </label>
+  </div>
+
+  <div class="chart-wrapper">
+    <h3>Score vs temps (exercice sélectionné)</h3>
+    <canvas id="lineChart"></canvas>
+  </div>
+
+  <div class="chart-wrapper">
+    <h3>Nombre de tests par catégorie</h3>
+    <canvas id="barChart"></canvas>
+  </div>
+
+  <div class="chart-wrapper">
+    <h3>Score moyen par semaine</h3>
+    <canvas id="weekChart"></canvas>
+  </div>
+
+<script>
+const CATEGORY_MAP = {
+  "Un mot sur deux": "Verbale",
+  "Pair ou impair": "Numérique",
+  "Psychomoteur psy0 AF cadet": "Psychomoteur",
+  "Formes et couleurs": "Attention",
+  "Airways": "Intellectuelle",
+  "M2 Back numérique": "Mémorisation",
+  "Séries logiques": "Intellectuelle",
+  "Billes": "Intellectuelle",
+  "Formes glissées - II": "Intellectuelle",
+  "Objets 3D": "Spatiale",
+  "Empilements": "Spatiale",
+  "Cubes 2D/3D - psy0 Air France": "Spatiale",
+  "Grilles de calculs": "Numérique",
+  "Boîtes à mots": "Verbale",
+  "Mots en étoile": "Verbale",
+  "Anglais présélection cadets Air France": "Anglais"
+};
+
+const monthsFr = {
+  "Janvier":"January","Février":"February","Mars":"March","Avril":"April","Mai":"May","Juin":"June","Juillet":"July","Août":"August","Septembre":"September","Octobre":"October","Novembre":"November","Décembre":"December"
+};
+
+const fileInput = document.getElementById('csvFile');
+const exerciseSelect = document.getElementById('exerciseSelect');
+let lineChart, barChart, weekChart;
+let rawData = [];
+
+fileInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: results => {
+        rawData = cleanData(results.data);
+        populateExerciseDropdown(rawData);
+        refreshCharts();
+      },
+      error: err => alert('Erreur de lecture CSV: ' + err.message)
+    });
+  }
+});
+
+exerciseSelect.addEventListener('change', refreshCharts);
+
+function cleanData(data) {
+  return data.map(row => {
+    // Nettoyage nom exercice & score
+    const test = (row.test || row.Exercice || '').trim();
+    const scoreStr = (row.score || row['Score (%)'] || '').toString().replace('%','').trim();
+    const score = parseFloat(scoreStr);
+
+    // Conversion date
+    let date = null;
+    const rawDate = row.at || row.date || row.Date || '';
+    if (rawDate) {
+      const p = rawDate.toString().split(' ');
+      if (p.length >= 4) {
+        // ex : "samedi 12 Octobre 2024 14h52"
+        const day = p[1];
+        const monthEn = monthsFr[p[2]] || p[2];
+        const year = p[3];
+        const time = (p[4] || '00h00').replace('h', ':');
+        date = new Date(`${day} ${monthEn} ${year} ${time}`);
+      } else {
+        date = new Date(rawDate);
+      }
+    }
+
+    return {
+      test,
+      score,
+      date,
+      category: CATEGORY_MAP[test] || 'Autre'
+    };
+  }).filter(row => !isNaN(row.score) && row.date instanceof Date && !isNaN(row.date));
+}
+
+function populateExerciseDropdown(data) {
+  const uniqueTests = [...new Set(data.map(d => d.test))].sort();
+  exerciseSelect.innerHTML = uniqueTests.map(t => `<option value="${t}">${t}</option>`).join('');
+}
+
+function refreshCharts() {
+  if (!rawData.length) return;
+  const selected = exerciseSelect.value || exerciseSelect.options[0].value;
+
+  // --- Line chart data ---
+  const lineData = rawData.filter(d => d.test === selected).sort((a,b) => a.date - b.date);
+  const lineLabels = lineData.map(d => d.date.toLocaleDateString('fr-FR'));
+  const lineScores = lineData.map(d => d.score);
+
+  // --- Bar chart data ---
+  const countsByCat = rawData.reduce((acc, cur) => {
+    acc[cur.category] = (acc[cur.category] || 0) + 1;
+    return acc;
+  }, {});
+  const barLabels = Object.keys(countsByCat);
+  const barValues = Object.values(countsByCat);
+
+  // --- Weekly average chart ---
+  const weeks = {};
+  rawData.forEach(d => {
+    const monday = new Date(d.date);
+    monday.setDate(monday.getDate() - ((monday.getDay()+6)%7)); // Monday start
+    const key = monday.toISOString().split('T')[0];
+    if (!weeks[key]) weeks[key] = { total:0, count:0, date:monday };
+    weeks[key].total += d.score;
+    weeks[key].count += 1;
+  });
+  const sortedWeeks = Object.values(weeks).sort((a,b)=>a.date-b.date);
+  const weekLabels = sortedWeeks.map(w => w.date.toLocaleDateString('fr-FR'));
+  const weekValues = sortedWeeks.map(w => (w.total / w.count).toFixed(1));
+
+  // --- Create / Update Charts ---
+  if (lineChart) lineChart.destroy();
+  if (barChart) barChart.destroy();
+  if (weekChart) weekChart.destroy();
+
+  const ctxLine = document.getElementById('lineChart');
+  const ctxBar = document.getElementById('barChart');
+  const ctxWeek = document.getElementById('weekChart');
+
+  lineChart = new Chart(ctxLine, {
+    type: 'line',
+    data: {
+      labels: lineLabels,
+      datasets: [{
+        label: `Score (%) – ${selected}`,
+        data: lineScores,
+        tension: 0.25,
+        fill: false,
+        pointRadius: 4,
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: true } },
+      scales: {
+        y: { beginAtZero: true, max: 100 }
+      }
+    }
+  });
+
+  barChart = new Chart(ctxBar, {
+    type: 'bar',
+    data: {
+      labels: barLabels,
+      datasets: [{
+        label: 'Tests',
+        data: barValues,
+        borderWidth: 1
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } }
+    }
+  });
+
+  weekChart = new Chart(ctxWeek, {
+    type: 'line',
+    data: {
+      labels: weekLabels,
+      datasets: [{
+        label: 'Score moyen (%)',
+        data: weekValues,
+        tension: 0.25,
+        fill: false,
+        pointRadius: 4,
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: true } },
+      scales: { y: { beginAtZero: true, max: 100 } }
+    }
+  });
+}
+</script>
+</body>
+</html>
